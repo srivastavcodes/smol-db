@@ -70,6 +70,7 @@ pub enum StorageError {
 /// `InternalCell` is an entry in the internal node (non-leaf) of the BpTree.
 /// It stores a key and a pointer to the child page that contains all the keys
 /// less than (or equal to) this key.
+#[derive(Debug, Copy, Clone)]
 struct InternalCell {
     key: u32,
 
@@ -78,7 +79,11 @@ struct InternalCell {
 }
 
 /// LeafCell holds the data entry in a leaf node, this is the actual row value.
+#[derive(Debug, Clone)]
 struct LeafCell {
+    // todo: a parent pointer should be here to know which page owns this cell,
+    //  so whichever code-block handles that, we'll instead return the index
+    //  of the page that can be used to access the page.
     key: u32,
     value: Vec<u8>,
 
@@ -92,7 +97,60 @@ struct LeafCell {
 
 /// This represents one page of the BpTree. A single page is of 4096 bytes.
 /// A single Node can be either an `Node::Internal` or `Node::Leaf`.
+#[derive(Debug, Clone)]
 struct BpTreeNode {
+    /// offset of this node in the database file.
     offset: u64,
+
+    /// slot array in the sorted order.
     slots: Vec<u16>,
+
+    /// bytes of free space between header and data.
+    free_size: u16,
+
+    /// whether the page has been modified since last in memory.
+    is_dirty: bool,
+
+    /// the last wal entry that modified this page.
+    last_lsn: u64,
+
+    /// is a leaf page or not?
+    is_leaf: bool,
+
+    // internal nodes fields
+    internal_cells: Vec<InternalCell>,
+    /// offset of the rightmost child (not stored with a key).
+    right_offset: u64,
+
+    // leaf nodes fields and whether it has left/right siblings and if yes, where?
+    leaf_cells: Vec<LeafCell>,
+    has_lsib: bool,
+    has_rsib: bool,
+    lsib_offset: u64,
+    rsib_offset: u64,
+}
+
+impl BpTreeNode {
+    /// Updates the last lsn of the node and marks the page dirty.
+    fn mark_dirty(&mut self, lsn: u64) {
+        self.last_lsn = lsn;
+        self.is_dirty = true;
+    }
+
+    /// Returns the right most key.
+    fn right_most_key(&self) -> u32 {
+        let last_idx = self.slots[self.slots.len() - 1] as usize;
+        self.internal_cells[last_idx].key
+    }
+
+    /// Directly indexes into the leaf_cells or internal_cells, so the provided
+    /// index must be an actual index for the cells array and not a logical one.
+    ///
+    /// E.g.: let _ = `cell_key(self.slots[i]);` returns the key.
+    fn cell_key(&self, offset: usize) -> u32 {
+        if self.is_leaf {
+            return self.leaf_cells[offset].key;
+        }
+        self.internal_cells[offset].key
+    }
 }
