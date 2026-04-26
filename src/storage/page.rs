@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 use thiserror::Error;
 
 // ============ core page constraints ================
@@ -43,8 +45,7 @@ pub const fn max_leaf_cells() -> usize {
 
 /// maximum number of internal cells per page.
 pub const fn max_internal_cells() -> usize {
-    let cells =
-        (PAGE_SIZE - INTERNAL_HEADER_SIZE) / (OFFSET_ELEM_SIZE + INTERNAL_CELL);
+    let cells = (PAGE_SIZE - INTERNAL_HEADER_SIZE) / (OFFSET_ELEM_SIZE + INTERNAL_CELL);
     assert!(cells > 0, "max_internal_cells must be positive");
     cells
 }
@@ -90,9 +91,6 @@ struct LeafCell {
     /// Deleted is a tombstone marker for scans or point queries to make sure
     /// this cell is skipped. The space is reclaimed during compaction.
     deleted: bool,
-
-    /// The size of the data this cell is holding, might be removed.
-    value_size: u32,
 }
 
 /// This represents one page of the BpTree. A single page is of 4096 bytes.
@@ -131,6 +129,17 @@ struct BpTreeNode {
 }
 
 impl BpTreeNode {
+    /// Directly indexes into the leaf_cells or internal_cells, so the provided
+    /// index must be an actual index for the cells array and not a logical one.
+    ///
+    /// E.g.: let _ = `cell_key(self.slots[i]);` returns the key.
+    fn cell_key(&self, offset: usize) -> u32 {
+        if self.is_leaf {
+            return self.leaf_cells[offset].key;
+        }
+        self.internal_cells[offset].key
+    }
+
     /// Updates the last lsn of the node and marks the page dirty.
     fn mark_dirty(&mut self, lsn: u64) {
         self.last_lsn = lsn;
@@ -143,14 +152,17 @@ impl BpTreeNode {
         self.internal_cells[last_idx].key
     }
 
-    /// Directly indexes into the leaf_cells or internal_cells, so the provided
-    /// index must be an actual index for the cells array and not a logical one.
-    ///
-    /// E.g.: let _ = `cell_key(self.slots[i]);` returns the key.
-    fn cell_key(&self, offset: usize) -> u32 {
-        if self.is_leaf {
-            return self.leaf_cells[offset].key;
-        }
-        self.internal_cells[offset].key
+    /// Appends into the slot the logical index of the cell being inserted, and append
+    /// a new leaf cell into [`BpTreeNode::leaf_cells`].
+    fn append_leaf_cell(&mut self, key: u32, value: Vec<u8>) {
+        self.slots.push(self.slots.len() as u16);
+        self.leaf_cells.push(LeafCell { key, value, deleted: false });
+    }
+
+    /// Appends into the slot the logical index of the cell being inserted, and append
+    /// a new internal cell into [`BpTreeNode::internal_cells`].
+    fn append_internal_cell(&mut self, key: u32, offset: u64) {
+        self.slots.push(self.slots.len() as u16);
+        self.internal_cells.push(InternalCell { key, offset });
     }
 }
