@@ -228,18 +228,14 @@ impl InternalNodeData {
     ///
     /// Panics if `index` equals `slots.len()` — use `append_internal_cell` instead.
     fn insert_internal_cell(&mut self, index: usize, key: u32, offset: u64) {
-        let new_cell_idx = self
-            .cells
-            .len()
-            .try_into()
-            .expect("cell count should be less than u16::MAX; page full");
+        let new_cell_idx = self.cells.len();
 
         self.slots.insert(index, new_cell_idx);
         self.cells.push(InternalCell { key, offset });
         // Restore correct child pointer relationships by swapping the offsets between
         // the newly inserted cell and the cell now at index+1.
-        let idx1 = self.slots[index] as usize;
-        let idx2 = self.slots[index + 1] as usize;
+        let idx1 = self.slots[index];
+        let idx2 = self.slots[index + 1];
 
         let offset1 = self.cells[idx1].offset;
         let offset2 = self.cells[idx2].offset;
@@ -264,120 +260,140 @@ enum NodeType {
     Leaf(LeafNodeData),
 }
 
-// /// This represents one page of the BpTree. A single page is of 4096 bytes.
-// /// A single Node can be either an `Node::Internal` or `Node::Leaf`.
-// #[derive(Debug, Clone, PartialEq)]
-// struct BpTreeNode {
-//     /// location of this node in the database file.
-//     location: u64,
+/// This represents one page of the BpTree. A single page is of 4096 bytes.
+/// A single Node can be either an `Node::Internal` or `Node::Leaf`.
+#[derive(Debug, Clone, PartialEq)]
+struct BpTreeNode {
+    /// Offset of this page in the database file.
+    pub file_offset: u64,
 
-//     /// bytes of free space between header and data.
-//     free_size: u16,
+    /// bytes of free space between header and data.
+    pub free_size: u16,
 
-//     /// whether the page has been modified since last in memory.
-//     is_dirty: bool,
+    /// whether the page has been modified since last in memory.
+    pub is_dirty: bool,
 
-//     /// the last wal entry that modified this page.
-//     last_lsn: u64,
+    /// the last wal entry that modified this page.
+    pub last_lsn: u64,
 
-//     /// whether this node is NodeType::Inner
-//     node_type: NodeType,
-// }
+    /// whether this node is NodeType::Inner
+    pub node_type: NodeType,
+}
 
-// impl BpTreeNode {
-//     /// Directly indexes into the leaf_cells or internal_cells, so the provided
-//     /// index must be an actual index for the cells array and not a logical one.
-//     ///
-//     /// E.g.: let _ = `cell_key(self.slots[i]);` returns the key.
-//     fn cell_key(&self, offset: usize) -> u32 {
-//         if self.is_leaf {
-//             return self.leaf_cells[offset].key;
-//         }
-//         self.internal_cells[offset].key
-//     }
+impl BpTreeNode {
+    pub fn create_leaf(file_offset: u64, data: LeafNodeData) -> Self {
+        Self {
+            file_offset,
+            free_size: 0,
+            is_dirty: false,
+            last_lsn: 0,
+            node_type: NodeType::Leaf(data),
+        }
+    }
 
-//     /// Updates the last lsn of the node and marks the page dirty.
-//     fn mark_dirty(&mut self, lsn: u64) {
-//         self.last_lsn = lsn;
-//         self.is_dirty = true;
-//     }
+    pub fn create_internal(file_offset: u64, data: InternalNodeData) -> Self {
+        Self {
+            file_offset,
+            free_size: 0,
+            is_dirty: false,
+            last_lsn: 0,
+            node_type: NodeType::Internal(data),
+        }
+    }
 
-//     /// Returns the right most key.
-//     fn right_most_key(&self) -> u32 {
-//         let last_idx = self.slots[self.slots.len() - 1] as usize;
-//         self.internal_cells[last_idx].key
-//     }
+    pub fn is_full(&self) -> bool {
+        match &self.node_type {
+            NodeType::Internal(data) => data.slots.len() >= max_internal_cells(),
+            NodeType::Leaf(data) => data.slots.len() >= max_leaf_cells(),
+        }
+    }
 
-//     /// Appends into the slot the logical index of the cell being inserted, and append
-//     /// a new leaf cell into [`BpTreeNode::leaf_cells`].
-//     fn push_leaf_cell(&mut self, key: u32, value: Vec<u8>) {
-//         self.slots.push(self.slots.len() as u16);
-//         self.leaf_cells.push(LeafCell { key, value, deleted: false });
-//     }
+    pub fn is_leaf(&self) -> bool {
+        matches!(self.node_type, NodeType::Leaf(..))
+    }
 
-//     /// Appends into the slot the logical index of the cell being inserted, and append
-//     /// a new internal cell into [`BpTreeNode::internal_cells`].
-//     fn push_internal_cell(&mut self, key: u32, offset: u64) {
-//         self.slots.push(self.slots.len() as u16);
-//         self.internal_cells.push(InternalCell { key, offset });
-//     }
+    pub fn mark_dirty(&mut self, lsn: u64) {
+        self.last_lsn = lsn;
+        self.is_dirty = true;
+    }
 
-//     /// Inserts a new key-offset pair into the internal node at the given slot index.
-//     ///
-//     /// In a B+ tree internal node, keys act as separators between child page pointers.
-//     /// Each cell stores a key and the file offset of its LEFT child page.
-//     /// The rightmost child pointer lives separately in `right_offset`.
-//     ///
-//     /// The logical layout looks like this:
-//     ///
-//     ///   [left_child] | key | [left_child] | key | ... | [right_offset]
-//     ///
-//     /// When inserting a new key, we cannot simply place it with its accompanying
-//     /// offset because that offset is the new page's left child, which must
-//     /// displace the existing left child of the key currently at `index`.
-//     /// The existing left child then becomes the left child of the new key.
-//     ///
-//     /// Example: insert key=15, offset=pageD at index=1
-//     ///
-//     /// Before:
-//     ///   slots          = [0, 1]
-//     ///   internal_cells = [(key=10, left=pageA), (key=20, left=pageB)]
-//     ///   right_offset   = pageC
-//     ///   logical:  pageA | 10 | pageB | 20 | pageC
-//     ///
-//     /// After slot insert and cell push (offsets not yet correct):
-//     ///   slots          = [0, 2, 1]
-//     ///   internal_cells = [(key=10, left=pageA), (key=20, left=pageB), (key=15, left=pageD)]
-//     ///   logical (wrong): pageA | 10 | pageD | 15 | pageB | 20 | pageC
-//     ///
-//     /// After swapping offsets at slots[index] and slots[index+1]:
-//     ///   internal_cells = [(key=10, left=pageA), (key=20, left=pageD), (key=15, left=pageB)]
-//     ///   logical (correct): pageA | 10 | pageB | 15 | pageD | 20 | pageC
-//     ///
-//     /// # Panics
-//     ///
-//     /// Panics if `index` equals `slots.len()` — use `append_internal_cell` instead.
-//     fn insert_internal_cell(&mut self, index: usize, key: u32, offset: u64) {
-//         let new_cell_idx: u16 = self
-//             .internal_cells
-//             .len()
-//             .try_into()
-//             .expect("cell count should be less than u16::MAX; page full");
+    pub fn mark_clean(&mut self) {
+        self.is_dirty = false;
+    }
 
-//         self.slots.insert(index, new_cell_idx);
-//         self.internal_cells.push(InternalCell { key, offset });
-//         // Restore correct child pointer relationships by swapping the offsets between
-//         // the newly inserted cell and the cell now at index+1.
-//         let idx1 = self.slots[index] as usize;
-//         let idx2 = self.slots[index + 1] as usize;
+    pub fn cell_key_at(&self, physical_idx: usize) -> u32 {
+        match &self.node_type {
+            NodeType::Leaf(data) => data.cell_key(physical_idx),
+            NodeType::Internal(data) => data.cell_key(physical_idx),
+        }
+    }
 
-//         let offset1 = self.internal_cells[idx1].offset;
-//         let offset2 = self.internal_cells[idx2].offset;
+    pub fn slots(&self) -> &[usize] {
+        match &self.node_type {
+            NodeType::Internal(data) => &data.slots,
+            NodeType::Leaf(data) => &data.slots,
+        }
+    }
 
-//         self.internal_cells[idx1].offset = offset2;
-//         self.internal_cells[idx2].offset = offset1;
-//     }
-// }
+    pub fn _find_cell_offset_by_key(&self, key: u32) -> (usize, bool) {
+        let slots = self.slots();
+        let mut low = 0usize;
+        let mut high = slots.len().saturating_sub(1);
+
+        if slots.is_empty() {
+            return (0, false);
+        }
+        while low <= high {
+            let mid = low + (high - low) / 2;
+            let curr = self.cell_key_at(slots[mid]);
+            match curr.cmp(&key) {
+                std::cmp::Ordering::Equal => return (mid, true),
+                std::cmp::Ordering::Less => low = mid + 1,
+                std::cmp::Ordering::Greater => high = mid - 1,
+            }
+        }
+        // (low, false)
+        todo!("underflow bug in mid-1")
+    }
+
+    pub fn find_cell_offset_by_key(&self, key: u32) -> (usize, bool) {
+        let slots = self.slots();
+        match slots.binary_search_by_key(&key, |&physical_idx| self.cell_key_at(physical_idx)) {
+            Ok(logical_idx) => (logical_idx, true),
+            Err(logical_idx) => (logical_idx, false),
+        }
+    }
+}
+
+impl BpTreeNode {
+    pub fn as_leaf(&self) -> PageResult<&LeafNodeData> {
+        match &self.node_type {
+            NodeType::Leaf(data) => Ok(data),
+            NodeType::Internal(..) => Err(PageError::WrongNodeType),
+        }
+    }
+
+    pub fn as_leaf_mut(&mut self) -> PageResult<&mut LeafNodeData> {
+        match &mut self.node_type {
+            NodeType::Leaf(data) => Ok(data),
+            NodeType::Internal(..) => Err(PageError::WrongNodeType),
+        }
+    }
+
+    pub fn as_internal(&self) -> PageResult<&InternalNodeData> {
+        match &self.node_type {
+            NodeType::Internal(data) => Ok(data),
+            NodeType::Leaf(..) => Err(PageError::WrongNodeType),
+        }
+    }
+
+    pub fn as_internal_mut(&mut self) -> PageResult<&mut InternalNodeData> {
+        match &mut self.node_type {
+            NodeType::Internal(data) => Ok(data),
+            NodeType::Leaf(..) => Err(PageError::WrongNodeType),
+        }
+    }
+}
 
 /// Checks if the provided value is smaller than the maximum value size and returns an error
 /// if it is larger.
