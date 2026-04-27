@@ -1,6 +1,6 @@
-#![allow(unused)]
-
 use thiserror::Error;
+
+type PageResult<T> = Result<T, PageError>;
 
 // ============ core page constraints ================
 pub const PAGE_SIZE: usize = 4096;
@@ -60,9 +60,15 @@ enum Node {
 }
 
 #[derive(Error, Debug)]
-pub enum StorageError {
+pub enum PageError {
     #[error("row size {actual} exceeds maximum of {max} bytes")]
     RowTooLarge { actual: usize, max: usize },
+
+    #[error("key `{0}` not found")]
+    KeyNotFound(u32),
+
+    #[error("operation not valid for this node type")]
+    WrongNodeType,
 
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -71,31 +77,103 @@ pub enum StorageError {
 /// `InternalCell` is an entry in the internal node (non-leaf) of the BpTree.
 /// It stores a key and a pointer to the child page that contains all the keys
 /// less than (or equal to) this key.
-#[derive(Debug, Copy, Clone)]
-struct InternalCell {
-    key: u32,
+#[derive(Debug, Clone, PartialEq)]
+pub struct InternalCell {
+    pub key: u32,
 
     /// offset of the child page less than the key.
-    offset: u64,
+    pub offset: u64,
 }
 
 /// LeafCell holds the data entry in a leaf node, this is the actual row value.
-#[derive(Debug, Clone)]
-struct LeafCell {
+#[derive(Debug, Clone, PartialEq)]
+pub struct LeafCell {
     // todo: a parent pointer should be here to know which page owns this cell,
     //  so whichever code-block handles that, we'll instead return the index
     //  of the page that can be used to access the page.
-    key: u32,
-    value: Vec<u8>,
+    pub key: u32,
+    pub value: Vec<u8>,
 
     /// Deleted is a tombstone marker for scans or point queries to make sure
     /// this cell is skipped. The space is reclaimed during compaction.
-    deleted: bool,
+    pub deleted: bool,
+}
+
+/// Holds the leaf cells and their offsets with left/right sibling data.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LeafNodeData {
+    /// `cells` holds the actual [`LeafCell`] data with the key and file-offset.
+    pub cells: Vec<LeafCell>,
+
+    /// `slots` is the logical sort index: `slots[i]` is the index into
+    /// `cells` of `LeafCell` type.
+    pub slots: Vec<usize>,
+    pub has_lsib: bool,
+    pub has_rsib: bool,
+    pub lsib_offset: u64,
+    pub rsib_offset: u64,
+}
+
+impl LeafNodeData {
+    pub fn new() -> Self {
+        Self {
+            cells: Vec::new(),
+            slots: Vec::new(),
+            has_lsib: false,
+            has_rsib: false,
+            lsib_offset: 0,
+            rsib_offset: 0,
+        }
+    }
+
+    /// Returns the key of the [`InternalCell`] according to the index provided.
+    /// It directly indexes into the cells so the provided index must be the
+    /// actual index and not a logical one.
+    pub fn cell_key(&self, physical_idx: usize) -> u32 {
+        self.cells[physical_idx].key
+    }
+
+    /// Append a cell at the end of the physical array, appending its index to the
+    /// end of the `slots` array. Used when cells are being added in sorted order.
+    /// E.g.: during a split.
+    pub fn append_cell(&mut self, key: u32, value: Vec<u8>) -> PageResult<()> {
+        check_value_size(&value)?;
+        let physical_idx = self.cells.len();
+        self.slots.push(physical_idx);
+        self.cells.push(LeafCell { key, value, deleted: false });
+        Ok(())
+    }
+
+    /// Insert a cell at the provided `logical_index`, shifting the slots array
+    /// right. The constructed [`LeafCell`] is appended to `cells` and its
+    /// physical index is inserted at `slots[logical_index]`.
+    pub fn insert_cell(&mut self, logical_idx: usize, key: u32, value: Vec<u8>) -> PageResult<()> {
+        check_value_size(&value)?;
+        let physical_idx = self.cells.len();
+        self.slots.insert(logical_idx, physical_idx);
+        self.cells.push(LeafCell { key, value, deleted: false });
+        Ok(())
+    }
+
+    /// Updates the given key's value or returns a `PageError` in case value size
+    /// is larger than max value.
+    /// Returns a `KeyNotFound` error if key does not exist.
+    pub fn update_cell(&mut self, key: u32, value: Vec<u8>) -> PageResult<()> {
+        check_value_size(&value)?;
+        // fixme: replace with binary search on keys in cells.
+        for cell in &mut self.cells {
+            if cell.key == key {
+                cell.value = value;
+                return Ok(());
+            }
+        }
+        Err(PageError::KeyNotFound(key))
+    }
 }
 
 /// This represents one page of the BpTree. A single page is of 4096 bytes.
 /// A single Node can be either an `Node::Internal` or `Node::Leaf`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 struct BpTreeNode {
     /// offset of this node in the database file.
     offset: u64,
@@ -154,15 +232,81 @@ impl BpTreeNode {
 
     /// Appends into the slot the logical index of the cell being inserted, and append
     /// a new leaf cell into [`BpTreeNode::leaf_cells`].
-    fn append_leaf_cell(&mut self, key: u32, value: Vec<u8>) {
+    fn push_leaf_cell(&mut self, key: u32, value: Vec<u8>) {
         self.slots.push(self.slots.len() as u16);
         self.leaf_cells.push(LeafCell { key, value, deleted: false });
     }
 
     /// Appends into the slot the logical index of the cell being inserted, and append
     /// a new internal cell into [`BpTreeNode::internal_cells`].
-    fn append_internal_cell(&mut self, key: u32, offset: u64) {
+    fn push_internal_cell(&mut self, key: u32, offset: u64) {
         self.slots.push(self.slots.len() as u16);
         self.internal_cells.push(InternalCell { key, offset });
+    }
+
+    /// Inserts a new key-offset pair into the internal node at the given slot index.
+    ///
+    /// In a B+ tree internal node, keys act as separators between child page pointers.
+    /// Each cell stores a key and the file offset of its LEFT child page.
+    /// The rightmost child pointer lives separately in `right_offset`.
+    ///
+    /// The logical layout looks like this:
+    ///
+    ///   [left_child] | key | [left_child] | key | ... | [right_offset]
+    ///
+    /// When inserting a new key, we cannot simply place it with its accompanying
+    /// offset because that offset is the new page's left child, which must
+    /// displace the existing left child of the key currently at `index`.
+    /// The existing left child then becomes the left child of the new key.
+    ///
+    /// Example: insert key=15, offset=pageD at index=1
+    ///
+    /// Before:
+    ///   slots          = [0, 1]
+    ///   internal_cells = [(key=10, left=pageA), (key=20, left=pageB)]
+    ///   right_offset   = pageC
+    ///   logical:  pageA | 10 | pageB | 20 | pageC
+    ///
+    /// After slot insert and cell push (offsets not yet correct):
+    ///   slots          = [0, 2, 1]
+    ///   internal_cells = [(key=10, left=pageA), (key=20, left=pageB), (key=15, left=pageD)]
+    ///   logical (wrong): pageA | 10 | pageD | 15 | pageB | 20 | pageC
+    ///
+    /// After swapping offsets at slots[index] and slots[index+1]:
+    ///   internal_cells = [(key=10, left=pageA), (key=20, left=pageD), (key=15, left=pageB)]
+    ///   logical (correct): pageA | 10 | pageB | 15 | pageD | 20 | pageC
+    ///
+    /// # Panics
+    ///
+    /// Panics if `index` equals `slots.len()` — use `append_internal_cell` instead.
+    fn insert_internal_cell(&mut self, index: usize, key: u32, offset: u64) {
+        let new_cell_idx: u16 = self
+            .internal_cells
+            .len()
+            .try_into()
+            .expect("cell count should be less than u16::MAX; page full");
+
+        self.slots.insert(index, new_cell_idx);
+        self.internal_cells.push(InternalCell { key, offset });
+        // Restore correct child pointer relationships by swapping the offsets between
+        // the newly inserted cell and the cell now at index+1.
+        let idx1 = self.slots[index] as usize;
+        let idx2 = self.slots[index + 1] as usize;
+
+        let offset1 = self.internal_cells[idx1].offset;
+        let offset2 = self.internal_cells[idx2].offset;
+
+        self.internal_cells[idx1].offset = offset2;
+        self.internal_cells[idx2].offset = offset1;
+    }
+}
+
+/// Checks if the provided value is smaller than the maximum value size and returns an error
+/// if it is larger.
+fn check_value_size(value: &[u8]) -> PageResult<()> {
+    if value.len() > MAX_VALUE_SIZE {
+        Err(PageError::RowTooLarge { actual: value.len(), max: MAX_VALUE_SIZE })
+    } else {
+        Ok(())
     }
 }
