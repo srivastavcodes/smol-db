@@ -404,3 +404,103 @@ fn check_value_size(value: &[u8]) -> PageResult<()> {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::ops::Not;
+
+    use super::*;
+
+    #[test]
+    fn test_find_cell_offset_by_key_leaf() {
+        let node = BpTreeNode {
+            file_offset: 0,
+            last_lsn: 0,
+            free_size: 0,
+            is_dirty: false,
+            node_type: NodeType::Leaf(LeafNodeData {
+                cells: vec![
+                    LeafCell { key: 1000, value: b"a".to_vec(), deleted: false },
+                    LeafCell { key: 1003, value: b"c".to_vec(), deleted: false },
+                    LeafCell { key: 1005, value: b"e".to_vec(), deleted: false },
+                    LeafCell { key: 1001, value: b"b".to_vec(), deleted: false },
+                ],
+                slots: vec![0, 3, 1, 2],
+                has_lsib: false,
+                has_rsib: false,
+                lsib_offset: 0,
+                rsib_offset: 0,
+            }),
+        };
+        assert_eq!(node.find_cell_offset_by_key(1000), (0, true));
+        assert_eq!(node.find_cell_offset_by_key(1005), (3, true));
+        assert_eq!(node.find_cell_offset_by_key(1001), (1, true));
+        assert_eq!(node.find_cell_offset_by_key(1003), (2, true));
+        assert_eq!(node.find_cell_offset_by_key(1004), (3, false));
+    }
+
+    #[test]
+    fn test_find_cell_offset_by_key_internal() {
+        let node = BpTreeNode {
+            file_offset: 0,
+            last_lsn: 0,
+            free_size: 0,
+            is_dirty: false,
+            node_type: NodeType::Internal(InternalNodeData {
+                cells: vec![
+                    InternalCell { key: 3, offset: 10 },
+                    InternalCell { key: 5, offset: 20 },
+                    InternalCell { key: 1, offset: 30 },
+                    InternalCell { key: 9, offset: 40 },
+                    InternalCell { key: 7, offset: 50 },
+                ],
+                slots: vec![2, 0, 1, 4, 3],
+                right_child: 60,
+            }),
+        };
+        assert_eq!(node.find_cell_offset_by_key(3), (1, true));
+        assert_eq!(node.find_cell_offset_by_key(4), (2, false));
+        assert_eq!(node.find_cell_offset_by_key(10), (5, false));
+    }
+
+    #[test]
+    fn test_is_full_leaf_at_and_below_capacity() {
+        let mut data = LeafNodeData::new();
+        for i in 0..max_leaf_cells() - 1 {
+            data.append_cell(i as u32, vec![0; 5]).expect("leaf cell should have been appended");
+        }
+        let mut node = BpTreeNode::create_leaf(0, data);
+        assert!(node.is_full().not(), "leaf before `max_leaf_cells()` must not be full");
+
+        let data = node.as_leaf_mut().unwrap();
+
+        data.append_cell(max_leaf_cells() as u32, vec![0; 5])
+            .expect("leaf cell should have been appended");
+        assert!(node.is_full(), "leaf at `max_leaf_cells()` must be full");
+    }
+
+    #[test]
+    fn test_is_full_internal_at_and_below_capacity() {
+        let mut data = InternalNodeData::new();
+        for i in 0..max_internal_cells() - 1 {
+            data.append_cell(i as u32, i as u64);
+        }
+        let mut node = BpTreeNode::create_internal(0, data);
+        assert!(node.is_full().not(), "internal before `max_internal_cells()` must not be full");
+
+        let data = node.as_internal_mut().unwrap();
+
+        data.append_cell(max_internal_cells() as u32, max_internal_cells() as u64);
+        assert!(node.is_full(), "internal at `max_internal_cells()` must be full");
+    }
+
+    #[test]
+    fn test_insert_leaf_cell_respects_size_limit() {
+        let mut data = LeafNodeData::new();
+        assert!(data.insert_cell(0, 0, vec![0; MAX_VALUE_SIZE]).is_ok());
+        assert!(data.append_cell(1, vec![0; MAX_VALUE_SIZE]).is_ok());
+
+        assert!(data.insert_cell(2, 0, vec![0; MAX_VALUE_SIZE + 1]).is_err());
+        assert!(data.append_cell(3, vec![0; MAX_VALUE_SIZE + 1]).is_err());
+    }
+}
