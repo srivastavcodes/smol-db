@@ -281,6 +281,7 @@ struct BpTreeNode {
 }
 
 impl BpTreeNode {
+    /// Creates a new leaf node at the given file offset.
     pub fn create_leaf(file_offset: u64, data: LeafNodeData) -> Self {
         Self {
             file_offset,
@@ -291,6 +292,7 @@ impl BpTreeNode {
         }
     }
 
+    /// Creates a new internal node at the given file offset.
     pub fn create_internal(file_offset: u64, data: InternalNodeData) -> Self {
         Self {
             file_offset,
@@ -301,6 +303,10 @@ impl BpTreeNode {
         }
     }
 
+    /// Returns true if the node has reached its maximum cell capacity.
+    ///
+    /// Leaf and internal nodes have different capacities derived from
+    /// [`PAGE_SIZE`] — a full node must be split before the next insertion.
     pub fn is_full(&self) -> bool {
         match &self.node_type {
             NodeType::Internal(data) => data.slots.len() >= max_internal_cells(),
@@ -308,19 +314,31 @@ impl BpTreeNode {
         }
     }
 
+    /// Returns true if this is a leaf node.
     pub fn is_leaf(&self) -> bool {
         matches!(self.node_type, NodeType::Leaf(..))
     }
 
+    /// Marks the page as modified and records the LSN of the modifying operation.
+    ///
+    /// The LSN is used during WAL replay to skip operations that have already
+    /// been applied to disk — if the page's `last_lsn` >= the WAL entry's LSN,
+    /// the operation is a no-op.
     pub fn mark_dirty(&mut self, lsn: u64) {
         self.last_lsn = lsn;
         self.is_dirty = true;
     }
 
+    /// Marks the page as clean after it has been flushed to disk.
     pub fn mark_clean(&mut self) {
         self.is_dirty = false;
     }
 
+    /// Returns the key of the cell at the given physical index.
+    ///
+    /// Physical indexes are stored in `slots` — you almost always want to go
+    /// through [`find_cell_offset_by_key`] or iterate over `slots()` rather
+    /// than calling this directly.
     pub fn cell_key_at(&self, physical_idx: usize) -> u32 {
         match &self.node_type {
             NodeType::Leaf(data) => data.cell_key(physical_idx),
@@ -328,6 +346,11 @@ impl BpTreeNode {
         }
     }
 
+    /// Returns the slot array as a sorted slice of physical cell indexes.
+    ///
+    /// `slots[i]` is the physical index into the cell array of the i-th
+    /// smallest key. Iterating this slice in order gives keys in ascending
+    /// order without physically sorting the cell array.
     pub fn slots(&self) -> &[usize] {
         match &self.node_type {
             NodeType::Internal(data) => &data.slots,
@@ -335,27 +358,15 @@ impl BpTreeNode {
         }
     }
 
-    pub fn _find_cell_offset_by_key(&self, key: u32) -> (usize, bool) {
-        let slots = self.slots();
-        let mut low = 0usize;
-        let mut high = slots.len().saturating_sub(1);
-
-        if slots.is_empty() {
-            return (0, false);
-        }
-        while low <= high {
-            let mid = low + (high - low) / 2;
-            let curr = self.cell_key_at(slots[mid]);
-            match curr.cmp(&key) {
-                std::cmp::Ordering::Equal => return (mid, true),
-                std::cmp::Ordering::Less => low = mid + 1,
-                std::cmp::Ordering::Greater => high = mid - 1,
-            }
-        }
-        // (low, false)
-        todo!("underflow bug in mid-1")
-    }
-
+    /// Searches the slot array for `key` using binary search.
+    ///
+    /// Returns `(logical_index, true)` if found, where `logical_index` is the
+    /// position in `slots` that points to the matching cell.
+    ///
+    /// Returns `(insertion_point, false)` if not found, where `insertion_point`
+    /// is the index at which `key` would need to be inserted to keep `slots`
+    /// sorted. The B+ tree uses this insertion point directly when inserting
+    /// new cells or navigating to the correct child.
     pub fn find_cell_offset_by_key(&self, key: u32) -> (usize, bool) {
         let slots = self.slots();
         match slots.binary_search_by_key(&key, |&physical_idx| self.cell_key_at(physical_idx)) {
@@ -366,6 +377,7 @@ impl BpTreeNode {
 }
 
 impl BpTreeNode {
+    /// Borrows the leaf data, returning an error if this is an internal node.
     pub fn as_leaf(&self) -> PageResult<&LeafNodeData> {
         match &self.node_type {
             NodeType::Leaf(data) => Ok(data),
@@ -373,6 +385,7 @@ impl BpTreeNode {
         }
     }
 
+    /// Mutably borrows the leaf data, returning an error if this is an internal node.
     pub fn as_leaf_mut(&mut self) -> PageResult<&mut LeafNodeData> {
         match &mut self.node_type {
             NodeType::Leaf(data) => Ok(data),
@@ -380,6 +393,7 @@ impl BpTreeNode {
         }
     }
 
+    /// Borrows the internal node data, returning an error if this is a leaf node.
     pub fn as_internal(&self) -> PageResult<&InternalNodeData> {
         match &self.node_type {
             NodeType::Internal(data) => Ok(data),
@@ -387,6 +401,7 @@ impl BpTreeNode {
         }
     }
 
+    /// Mutably borrows the internal node data, returning an error if this is a leaf node.
     pub fn as_internal_mut(&mut self) -> PageResult<&mut InternalNodeData> {
         match &mut self.node_type {
             NodeType::Internal(data) => Ok(data),
