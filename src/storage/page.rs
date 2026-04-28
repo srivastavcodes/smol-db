@@ -562,4 +562,64 @@ mod tests {
         assert!(data.insert_cell(2, 0, vec![0; MAX_VALUE_SIZE + 1]).is_err());
         assert!(data.append_cell(3, vec![0; MAX_VALUE_SIZE + 1]).is_err());
     }
+
+    #[test]
+    fn test_split_leaf_append_to() {
+        let mut data = LeafNodeData::new();
+        for i in 0..5 {
+            data.append_cell(i, format!("Hello{i}").into_bytes()).unwrap();
+        }
+        let mut original = BpTreeNode::create_leaf(0, data);
+        let mut new_node = LeafNodeData::new();
+
+        let mid_key = original.split_leaf_append_to(&mut new_node).unwrap();
+        assert_eq!(2u32, mid_key);
+        assert_eq!(3, new_node.slots.len());
+        assert_eq!(3, new_node.cells.len());
+
+        let og_leaf = original.as_leaf().unwrap();
+        for i in 0..2 {
+            let physical_idx = og_leaf.slots[i];
+            let actual = &og_leaf.cells[physical_idx];
+            assert_eq!(i, actual.key as usize);
+            assert_eq!(format!("Hello{i}").into_bytes(), actual.value)
+        }
+
+        for i in 0..3 {
+            let physical_idx = new_node.slots[i];
+            let actual = &new_node.cells[physical_idx];
+            assert_eq!(i + 2, actual.key as usize);
+            assert_eq!(format!("Hello{}", i + 2).into_bytes(), actual.value);
+        }
+    }
+
+    #[test]
+    fn test_split_internal_append_to() {
+        let mut data = InternalNodeData::new();
+        for i in 0..5 {
+            data.append_cell(i, (100 + i) as u64);
+        }
+        let mut original = BpTreeNode::create_internal(0, data);
+        let mut new_node = InternalNodeData::new();
+
+        let mid_key = original.split_internal_append_to(&mut new_node).unwrap();
+        assert_eq!(2u32, mid_key);
+        assert_eq!(2, new_node.slots.len());
+        assert_eq!(2, new_node.cells.len());
+
+        let og_leaf = original.as_internal().unwrap();
+        for i in 0..2 {
+            let physical_idx = og_leaf.slots[i];
+            let actual = &og_leaf.cells[physical_idx];
+            assert_eq!(i, actual.key as usize);
+            assert_eq!((100 + i) as u64, actual.child_offset)
+        }
+
+        for i in 0..2 {
+            let physical_idx = new_node.slots[i];
+            let actual = &new_node.cells[physical_idx];
+            assert_eq!(i + 3, actual.key as usize);
+            assert_eq!((100 + i + 3) as u64, actual.child_offset);
+        }
+    }
 }
