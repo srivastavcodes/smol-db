@@ -159,7 +159,7 @@ pub struct InternalCell {
     pub key: u32,
 
     /// offset of the child page less than the key.
-    pub offset: u64,
+    pub child_offset: u64,
 }
 
 /// InternalNodeData holds the internal `cells` and `slots` within which, the physical
@@ -171,12 +171,12 @@ pub struct InternalNodeData {
 
     /// The right-most child: the page whose keys are all > the largest key stored in
     /// this mode.
-    pub right_child: u64,
+    pub right_child_offset: u64,
 }
 
 impl InternalNodeData {
     pub fn new() -> Self {
-        Self { cells: Vec::new(), slots: Vec::new(), right_child: 0 }
+        Self { cells: Vec::new(), slots: Vec::new(), right_child_offset: 0 }
     }
 
     /// Returns the key of the `InternalCell` according to the index provided.
@@ -189,7 +189,7 @@ impl InternalNodeData {
     pub fn append_cell(&mut self, key: u32, child_offset: u64) {
         let physical_idx = self.cells.len();
         self.slots.push(physical_idx);
-        self.cells.push(InternalCell { key, offset: child_offset });
+        self.cells.push(InternalCell { key, child_offset });
     }
 
     /// Inserts a new key-offset pair into the internal node at the given slot index.
@@ -231,17 +231,17 @@ impl InternalNodeData {
         let new_cell_idx = self.cells.len();
 
         self.slots.insert(index, new_cell_idx);
-        self.cells.push(InternalCell { key, offset });
+        self.cells.push(InternalCell { key, child_offset: offset });
         // Restore correct child pointer relationships by swapping the offsets between
         // the newly inserted cell and the cell now at index+1.
         let idx1 = self.slots[index];
         let idx2 = self.slots[index + 1];
 
-        let offset1 = self.cells[idx1].offset;
-        let offset2 = self.cells[idx2].offset;
+        let offset1 = self.cells[idx1].child_offset;
+        let offset2 = self.cells[idx2].child_offset;
 
-        self.cells[idx1].offset = offset2;
-        self.cells[idx2].offset = offset1;
+        self.cells[idx1].child_offset = offset2;
+        self.cells[idx2].child_offset = offset1;
     }
 
     /// Returns the right most key in the current internal node.
@@ -374,6 +374,50 @@ impl BpTreeNode {
             Err(logical_idx) => (logical_idx, false),
         }
     }
+
+    /// Splits the current node into two halves and appends the second half into the provided
+    /// new_node. Returns the separator key (first key of the second half) to be pushed up to
+    /// the parent.
+    pub fn split_leaf_append_to(&mut self, new_node: &mut LeafNodeData) -> PageResult<u32> {
+        let data = self.as_leaf_mut()?;
+        let mid = data.slots.len() / 2;
+
+        for i in mid..data.slots.len() {
+            let physical_idx = data.slots[i];
+            let cell = &data.cells[physical_idx];
+            new_node.append_cell(cell.key, cell.value.clone())?;
+        }
+        data.slots.truncate(mid);
+        // Orphaned cells remain in `cells` vector - physical indexes in `slots` are still
+        // valid. Compaction can be added later.
+        let separator = new_node.cells[new_node.slots[0]].key;
+        Ok(separator)
+    }
+
+    /// Splits the current node into two halves and appends the second half into the provided
+    /// new_node. The middle key is *not* kept in either node - it is returned as the
+    /// separator to be inserted into the parent. The middle cell's `child_offset` becomes the
+    /// original's `right_child_offset` and the original's `right_child_offset` becomes the
+    /// `right_child_offset` of the new_node.
+    pub fn split_internal_append_to(&mut self, new_node: &mut InternalNodeData) -> PageResult<u32> {
+        let data = self.as_internal_mut()?;
+        let mid = data.slots.len() / 2;
+
+        for i in (mid + 1)..data.slots.len() {
+            let physical_idx = data.slots[i];
+            let cell = &data.cells[physical_idx];
+            new_node.append_cell(cell.key, cell.child_offset);
+        }
+        new_node.right_child_offset = data.right_child_offset;
+        // The mid cell's key is the separator key; its right_child offset becomes
+        // the og's new right_child offset.
+        let physical_mid = data.slots[mid];
+        data.right_child_offset = data.cells[physical_mid].child_offset;
+
+        let separator_key = data.cells[physical_mid].key;
+        data.slots.truncate(mid);
+        Ok(separator_key)
+    }
 }
 
 impl BpTreeNode {
@@ -463,14 +507,14 @@ mod tests {
             is_dirty: false,
             node_type: NodeType::Internal(InternalNodeData {
                 cells: vec![
-                    InternalCell { key: 3, offset: 10 },
-                    InternalCell { key: 5, offset: 20 },
-                    InternalCell { key: 1, offset: 30 },
-                    InternalCell { key: 9, offset: 40 },
-                    InternalCell { key: 7, offset: 50 },
+                    InternalCell { key: 3, child_offset: 10 },
+                    InternalCell { key: 5, child_offset: 20 },
+                    InternalCell { key: 1, child_offset: 30 },
+                    InternalCell { key: 9, child_offset: 40 },
+                    InternalCell { key: 7, child_offset: 50 },
                 ],
                 slots: vec![2, 0, 1, 4, 3],
-                right_child: 60,
+                right_child_offset: 60,
             }),
         };
         assert_eq!(node.find_cell_offset_by_key(3), (1, true));
