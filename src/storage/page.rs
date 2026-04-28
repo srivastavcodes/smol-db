@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-type PageResult<T> = Result<T, PageError>;
+pub type PageResult<T> = Result<T, PageError>;
 
 // ============ core page constraints ================
 pub const PAGE_SIZE: usize = 4096;
@@ -255,7 +255,7 @@ impl InternalNodeData {
 /// location of the key on the leaf node); or leaf node (which contains the
 /// val associated with the key, this is where the actual data is stored).
 #[derive(Debug, Clone, PartialEq)]
-enum NodeType {
+pub enum NodeType {
     Internal(InternalNodeData),
     Leaf(LeafNodeData),
 }
@@ -263,7 +263,7 @@ enum NodeType {
 /// This represents one page of the BpTree. A single page is of 4096 bytes.
 /// A single Node can be either an `Node::Internal` or `Node::Leaf`.
 #[derive(Debug, Clone, PartialEq)]
-struct BpTreeNode {
+pub struct BpTreeNode {
     /// Offset of this page in the database file.
     pub file_offset: u64,
 
