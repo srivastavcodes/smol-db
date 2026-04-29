@@ -45,7 +45,8 @@ pub const fn max_leaf_cells() -> usize {
 
 /// maximum number of internal cells per page.
 pub const fn max_internal_cells() -> usize {
-    let cells = (PAGE_SIZE - INTERNAL_HEADER_SIZE) / (OFFSET_ELEM_SIZE + INTERNAL_CELL);
+    let cells =
+        (PAGE_SIZE - INTERNAL_HEADER_SIZE) / (OFFSET_ELEM_SIZE + INTERNAL_CELL);
     assert!(cells > 0, "max_internal_cells must be positive");
     cells
 }
@@ -127,7 +128,12 @@ impl LeafNodeData {
     /// Insert a cell at the provided `logical_index`, shifting the slots array
     /// right. The constructed [`LeafCell`] is appended to `cells` and its
     /// physical index is inserted at `slots[logical_index]`.
-    pub fn insert_cell(&mut self, logical_idx: usize, key: u32, value: Vec<u8>) -> PageResult<()> {
+    pub fn insert_cell(
+        &mut self,
+        logical_idx: usize,
+        key: u32,
+        value: Vec<u8>,
+    ) -> PageResult<()> {
         check_value_size(&value)?;
         let physical_idx = self.cells.len();
         self.slots.insert(logical_idx, physical_idx);
@@ -309,7 +315,9 @@ impl BpTreeNode {
     /// [`PAGE_SIZE`] — a full node must be split before the next insertion.
     pub fn is_full(&self) -> bool {
         match &self.node_type {
-            NodeType::Internal(data) => data.slots.len() >= max_internal_cells(),
+            NodeType::Internal(data) => {
+                data.slots.len() >= max_internal_cells()
+            }
             NodeType::Leaf(data) => data.slots.len() >= max_leaf_cells(),
         }
     }
@@ -369,7 +377,9 @@ impl BpTreeNode {
     /// new cells or navigating to the correct child.
     pub fn find_cell_offset_by_key(&self, key: u32) -> (usize, bool) {
         let slots = self.slots();
-        match slots.binary_search_by_key(&key, |&physical_idx| self.cell_key_at(physical_idx)) {
+        match slots.binary_search_by_key(&key, |&physical_idx| {
+            self.cell_key_at(physical_idx)
+        }) {
             Ok(logical_idx) => (logical_idx, true),
             Err(logical_idx) => (logical_idx, false),
         }
@@ -378,7 +388,10 @@ impl BpTreeNode {
     /// Splits the current node into two halves and appends the second half into the provided
     /// new_node. Returns the separator key (first key of the second half) to be pushed up to
     /// the parent.
-    pub fn split_leaf_append_to(&mut self, new_node: &mut LeafNodeData) -> PageResult<u32> {
+    pub fn split_leaf_append_to(
+        &mut self,
+        new_node: &mut LeafNodeData,
+    ) -> PageResult<u32> {
         let data = self.as_leaf_mut()?;
         let mid = data.slots.len() / 2;
 
@@ -399,7 +412,10 @@ impl BpTreeNode {
     /// separator to be inserted into the parent. The middle cell's `child_offset` becomes the
     /// original's `right_child_offset` and the original's `right_child_offset` becomes the
     /// `right_child_offset` of the new_node.
-    pub fn split_internal_append_to(&mut self, new_node: &mut InternalNodeData) -> PageResult<u32> {
+    pub fn split_internal_append_to(
+        &mut self,
+        new_node: &mut InternalNodeData,
+    ) -> PageResult<u32> {
         let data = self.as_internal_mut()?;
         let mid = data.slots.len() / 2;
 
@@ -479,10 +495,26 @@ mod tests {
             is_dirty: false,
             node_type: NodeType::Leaf(LeafNodeData {
                 cells: vec![
-                    LeafCell { key: 1000, value: b"a".to_vec(), deleted: false },
-                    LeafCell { key: 1003, value: b"c".to_vec(), deleted: false },
-                    LeafCell { key: 1005, value: b"e".to_vec(), deleted: false },
-                    LeafCell { key: 1001, value: b"b".to_vec(), deleted: false },
+                    LeafCell {
+                        key: 1000,
+                        value: b"a".to_vec(),
+                        deleted: false,
+                    },
+                    LeafCell {
+                        key: 1003,
+                        value: b"c".to_vec(),
+                        deleted: false,
+                    },
+                    LeafCell {
+                        key: 1005,
+                        value: b"e".to_vec(),
+                        deleted: false,
+                    },
+                    LeafCell {
+                        key: 1001,
+                        value: b"b".to_vec(),
+                        deleted: false,
+                    },
                 ],
                 slots: vec![0, 3, 1, 2],
                 has_lsib: false,
@@ -526,10 +558,14 @@ mod tests {
     fn test_is_full_leaf_at_and_below_capacity() {
         let mut data = LeafNodeData::new();
         for i in 0..max_leaf_cells() - 1 {
-            data.append_cell(i as u32, vec![0; 5]).expect("leaf cell should have been appended");
+            data.append_cell(i as u32, vec![0; 5])
+                .expect("leaf cell should have been appended");
         }
         let mut node = BpTreeNode::create_leaf(0, data);
-        assert!(node.is_full().not(), "leaf before `max_leaf_cells()` must not be full");
+        assert!(
+            node.is_full().not(),
+            "leaf before `max_leaf_cells()` must not be full"
+        );
 
         let data = node.as_leaf_mut().unwrap();
 
@@ -545,12 +581,21 @@ mod tests {
             data.append_cell(i as u32, i as u64);
         }
         let mut node = BpTreeNode::create_internal(0, data);
-        assert!(node.is_full().not(), "internal before `max_internal_cells()` must not be full");
+        assert!(
+            node.is_full().not(),
+            "internal before `max_internal_cells()` must not be full"
+        );
 
         let data = node.as_internal_mut().unwrap();
 
-        data.append_cell(max_internal_cells() as u32, max_internal_cells() as u64);
-        assert!(node.is_full(), "internal at `max_internal_cells()` must be full");
+        data.append_cell(
+            max_internal_cells() as u32,
+            max_internal_cells() as u64,
+        );
+        assert!(
+            node.is_full(),
+            "internal at `max_internal_cells()` must be full"
+        );
     }
 
     #[test]
