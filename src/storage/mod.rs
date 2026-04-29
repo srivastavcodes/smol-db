@@ -2,3 +2,4 @@
 /// the db including the page layout, serialization-deserialization, bp-tree, etc.
 pub mod cache;
 pub mod page;
+pub mod record;

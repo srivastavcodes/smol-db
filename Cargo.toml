@@ -9,3 +9,4 @@ dead_code = "allow"
 
 [dependencies]
 thiserror = "2"
+byteorder = "1"
