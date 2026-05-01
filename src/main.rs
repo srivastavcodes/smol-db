@@ -1,7 +1,7 @@
 use std::error::Error;
 
 use self::storage::cache::LruCache;
-use self::storage::page::{BpTreeNode, LeafNodeData, NodeType};
+use self::storage::page::{BpTreeNode, LeafNode, NodeType};
 
 mod storage;
 
@@ -11,7 +11,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         free_size: 0,
         is_dirty: false,
         last_lsn: 0,
-        node_type: NodeType::Leaf(LeafNodeData::new()),
+        node_type: NodeType::Leaf(LeafNode::new()),
     };
 
     let mut cache = LruCache::new(3);

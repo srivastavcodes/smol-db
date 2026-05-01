@@ -82,7 +82,7 @@ pub struct LeafCell {
 
 /// Holds the leaf cells and their offsets with left/right sibling data.
 #[derive(Debug, Clone, PartialEq)]
-pub struct LeafNodeData {
+pub struct LeafNode {
     /// `cells` holds the actual [`LeafCell`] data with the key and file-offset.
     pub cells: Vec<LeafCell>,
 
@@ -95,7 +95,7 @@ pub struct LeafNodeData {
     pub rsib_offset: u64,
 }
 
-impl LeafNodeData {
+impl LeafNode {
     pub fn new() -> Self {
         Self {
             cells: Vec::new(),
@@ -171,7 +171,7 @@ pub struct InternalCell {
 /// InternalNodeData holds the internal `cells` and `slots` within which, the physical
 /// index of the internal nodes are stored.
 #[derive(Debug, Clone, PartialEq)]
-pub struct InternalNodeData {
+pub struct InternalNode {
     pub cells: Vec<InternalCell>,
     pub slots: Vec<usize>,
 
@@ -180,7 +180,7 @@ pub struct InternalNodeData {
     pub right_child_offset: u64,
 }
 
-impl InternalNodeData {
+impl InternalNode {
     pub fn new() -> Self {
         Self { cells: Vec::new(), slots: Vec::new(), right_child_offset: 0 }
     }
@@ -262,8 +262,8 @@ impl InternalNodeData {
 /// val associated with the key, this is where the actual data is stored).
 #[derive(Debug, Clone, PartialEq)]
 pub enum NodeType {
-    Internal(InternalNodeData),
-    Leaf(LeafNodeData),
+    Internal(InternalNode),
+    Leaf(LeafNode),
 }
 
 /// This represents one page of the BpTree. A single page is of 4096 bytes.
@@ -288,7 +288,7 @@ pub struct BpTreeNode {
 
 impl BpTreeNode {
     /// Creates a new leaf node at the given file offset.
-    pub fn create_leaf(file_offset: u64, data: LeafNodeData) -> Self {
+    pub fn create_leaf(file_offset: u64, data: LeafNode) -> Self {
         Self {
             file_offset,
             free_size: 0,
@@ -299,7 +299,7 @@ impl BpTreeNode {
     }
 
     /// Creates a new internal node at the given file offset.
-    pub fn create_internal(file_offset: u64, data: InternalNodeData) -> Self {
+    pub fn create_internal(file_offset: u64, data: InternalNode) -> Self {
         Self {
             file_offset,
             free_size: 0,
@@ -390,7 +390,7 @@ impl BpTreeNode {
     /// the parent.
     pub fn split_leaf_append_to(
         &mut self,
-        new_node: &mut LeafNodeData,
+        new_node: &mut LeafNode,
     ) -> PageResult<u32> {
         let data = self.as_leaf_mut()?;
         let mid = data.slots.len() / 2;
@@ -414,7 +414,7 @@ impl BpTreeNode {
     /// `right_child_offset` of the new_node.
     pub fn split_internal_append_to(
         &mut self,
-        new_node: &mut InternalNodeData,
+        new_node: &mut InternalNode,
     ) -> PageResult<u32> {
         let data = self.as_internal_mut()?;
         let mid = data.slots.len() / 2;
@@ -438,7 +438,7 @@ impl BpTreeNode {
 
 impl BpTreeNode {
     /// Borrows the leaf data, returning an error if this is an internal node.
-    pub fn as_leaf(&self) -> PageResult<&LeafNodeData> {
+    pub fn as_leaf(&self) -> PageResult<&LeafNode> {
         match &self.node_type {
             NodeType::Leaf(data) => Ok(data),
             NodeType::Internal(..) => Err(PageError::WrongNodeType),
@@ -446,7 +446,7 @@ impl BpTreeNode {
     }
 
     /// Mutably borrows the leaf data, returning an error if this is an internal node.
-    pub fn as_leaf_mut(&mut self) -> PageResult<&mut LeafNodeData> {
+    pub fn as_leaf_mut(&mut self) -> PageResult<&mut LeafNode> {
         match &mut self.node_type {
             NodeType::Leaf(data) => Ok(data),
             NodeType::Internal(..) => Err(PageError::WrongNodeType),
@@ -454,7 +454,7 @@ impl BpTreeNode {
     }
 
     /// Borrows the internal node data, returning an error if this is a leaf node.
-    pub fn as_internal(&self) -> PageResult<&InternalNodeData> {
+    pub fn as_internal(&self) -> PageResult<&InternalNode> {
         match &self.node_type {
             NodeType::Internal(data) => Ok(data),
             NodeType::Leaf(..) => Err(PageError::WrongNodeType),
@@ -462,7 +462,7 @@ impl BpTreeNode {
     }
 
     /// Mutably borrows the internal node data, returning an error if this is a leaf node.
-    pub fn as_internal_mut(&mut self) -> PageResult<&mut InternalNodeData> {
+    pub fn as_internal_mut(&mut self) -> PageResult<&mut InternalNode> {
         match &mut self.node_type {
             NodeType::Internal(data) => Ok(data),
             NodeType::Leaf(..) => Err(PageError::WrongNodeType),
@@ -493,7 +493,7 @@ mod tests {
             last_lsn: 0,
             free_size: 0,
             is_dirty: false,
-            node_type: NodeType::Leaf(LeafNodeData {
+            node_type: NodeType::Leaf(LeafNode {
                 cells: vec![
                     LeafCell {
                         key: 1000,
@@ -537,7 +537,7 @@ mod tests {
             last_lsn: 0,
             free_size: 0,
             is_dirty: false,
-            node_type: NodeType::Internal(InternalNodeData {
+            node_type: NodeType::Internal(InternalNode {
                 cells: vec![
                     InternalCell { key: 3, child_offset: 10 },
                     InternalCell { key: 5, child_offset: 20 },
@@ -556,7 +556,7 @@ mod tests {
 
     #[test]
     fn test_is_full_leaf_at_and_below_capacity() {
-        let mut data = LeafNodeData::new();
+        let mut data = LeafNode::new();
         for i in 0..max_leaf_cells() - 1 {
             data.append_cell(i as u32, vec![0; 5])
                 .expect("leaf cell should have been appended");
@@ -576,7 +576,7 @@ mod tests {
 
     #[test]
     fn test_is_full_internal_at_and_below_capacity() {
-        let mut data = InternalNodeData::new();
+        let mut data = InternalNode::new();
         for i in 0..max_internal_cells() - 1 {
             data.append_cell(i as u32, i as u64);
         }
@@ -600,7 +600,7 @@ mod tests {
 
     #[test]
     fn test_insert_leaf_cell_respects_size_limit() {
-        let mut data = LeafNodeData::new();
+        let mut data = LeafNode::new();
         assert!(data.insert_cell(0, 0, vec![0; MAX_VALUE_SIZE]).is_ok());
         assert!(data.append_cell(1, vec![0; MAX_VALUE_SIZE]).is_ok());
 
@@ -610,12 +610,12 @@ mod tests {
 
     #[test]
     fn test_split_leaf_append_to() {
-        let mut data = LeafNodeData::new();
+        let mut data = LeafNode::new();
         for i in 0..5 {
             data.append_cell(i, format!("Hello{i}").into_bytes()).unwrap();
         }
         let mut original = BpTreeNode::create_leaf(0, data);
-        let mut new_node = LeafNodeData::new();
+        let mut new_node = LeafNode::new();
 
         let mid_key = original.split_leaf_append_to(&mut new_node).unwrap();
         assert_eq!(2u32, mid_key);
@@ -640,12 +640,12 @@ mod tests {
 
     #[test]
     fn test_split_internal_append_to() {
-        let mut data = InternalNodeData::new();
+        let mut data = InternalNode::new();
         for i in 0..5 {
             data.append_cell(i, (100 + i) as u64);
         }
         let mut original = BpTreeNode::create_internal(0, data);
-        let mut new_node = InternalNodeData::new();
+        let mut new_node = InternalNode::new();
 
         let mid_key = original.split_internal_append_to(&mut new_node).unwrap();
         assert_eq!(2u32, mid_key);

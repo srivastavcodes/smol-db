@@ -118,7 +118,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::storage::page::LeafNodeData;
+    use crate::storage::page::LeafNode;
 
     use super::*;
 
@@ -126,20 +126,20 @@ mod tests {
     fn test_lru_get() {
         let mut lru = LruCache::new(3);
 
-        lru.set_entry("A", BpTreeNode::create_leaf(1, LeafNodeData::new()))
+        lru.set_entry("A", BpTreeNode::create_leaf(1, LeafNode::new()))
             .unwrap();
-        lru.set_entry("B", BpTreeNode::create_leaf(2, LeafNodeData::new()))
+        lru.set_entry("B", BpTreeNode::create_leaf(2, LeafNode::new()))
             .unwrap();
-        lru.set_entry("C", BpTreeNode::create_leaf(3, LeafNodeData::new()))
+        lru.set_entry("C", BpTreeNode::create_leaf(3, LeafNode::new()))
             .unwrap();
 
         let key = "A";
-        let expect = BpTreeNode::create_leaf(1, LeafNodeData::new());
+        let expect = BpTreeNode::create_leaf(1, LeafNode::new());
         let entry = lru.node(&key).unwrap();
         assert_eq!(expect.file_offset, entry.file_offset);
 
         let key = "C";
-        let expect = BpTreeNode::create_leaf(3, LeafNodeData::new());
+        let expect = BpTreeNode::create_leaf(3, LeafNode::new());
         let entry = lru.node(&key).unwrap();
         assert_eq!(expect.file_offset, entry.file_offset);
 
@@ -152,12 +152,12 @@ mod tests {
         use super::*;
 
         fn make_clean_node(file_offset: u64) -> BpTreeNode {
-            BpTreeNode::create_leaf(file_offset, LeafNodeData::new())
+            BpTreeNode::create_leaf(file_offset, LeafNode::new())
         }
 
         fn make_dirty_node(file_offset: u64) -> BpTreeNode {
             let mut node =
-                BpTreeNode::create_leaf(file_offset, LeafNodeData::new());
+                BpTreeNode::create_leaf(file_offset, LeafNode::new());
             node.mark_dirty(1);
             node
         }
